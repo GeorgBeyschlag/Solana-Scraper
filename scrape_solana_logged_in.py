@@ -263,12 +263,77 @@ def extract_tweet_content(article):
             timestamp = time_elem.get_attribute('datetime')
         except:
             timestamp = datetime.now().isoformat()
+        
+        # Extract likes count - UPDATED METHOD
+        try:
+            # First try to find button with data-testid="like"
+            try:
+                like_button = article.find_element(By.XPATH, './/div[@data-testid="like"]')
+                
+                # Try to find the aria-label which contains the likes count
+                aria_label = like_button.get_attribute('aria-label')
+                
+                # If aria-label is found, extract the number
+                if aria_label and ('like' in aria_label.lower() or 'Like' in aria_label):
+                    # Parse the number from the aria-label text
+                    import re
+                    likes_match = re.search(r'(\d+,?\d*)\s+[Ll]ikes?', aria_label)
+                    if likes_match:
+                        # Remove commas from numbers like "1,234"
+                        likes = int(likes_match.group(1).replace(',', ''))
+                    else:
+                        # If specific pattern doesn't match, try to find any number
+                        likes_match = re.search(r'(\d+)', aria_label)
+                        if likes_match:
+                            likes = int(likes_match.group(1))
+                        else:
+                            likes = 0
+                else:
+                    # Fallback: try to get it directly from the button text
+                    likes_text = like_button.text.strip()
+                    if likes_text and likes_text.isdigit():
+                        likes = int(likes_text)
+                    else:
+                        likes = 0
+            except:
+                # Second method: try to find by searching for button with "Likes" in aria-label
+                like_buttons = article.find_elements(By.XPATH, './/button[contains(@aria-label, "Like")]')
+                
+                if like_buttons:
+                    for btn in like_buttons:
+                        aria_label = btn.get_attribute('aria-label')
+                        if aria_label and ('like' in aria_label.lower() or 'Like' in aria_label):
+                            import re
+                            likes_match = re.search(r'(\d+,?\d*)\s+[Ll]ikes?', aria_label)
+                            if likes_match:
+                                # Remove commas from numbers like "1,234"
+                                likes = int(likes_match.group(1).replace(',', ''))
+                                break
+                    else:  # No match found in the loop
+                        likes = 0
+                else:
+                    # Third method: try to find a span with a like count
+                    try:
+                        # Look for spans inside containers that might have like counts
+                        metric_spans = article.find_elements(By.XPATH, './/div[contains(@role, "group")]//span')
+                        for span in metric_spans:
+                            if span.text and span.text.strip().isdigit():
+                                likes = int(span.text.strip())
+                                break
+                        else:
+                            likes = 0
+                    except:
+                        likes = 0
+        except Exception as e:
+            print(f"Error extracting likes count: {e}")
+            likes = 0
             
         return {
             "author": author,
             "handle": handle,
             "date": timestamp,
-            "text": content
+            "text": content,
+            "likes": likes
         }
     except Exception as e:
         print(f"Error extracting tweet content: {e}")
@@ -302,7 +367,8 @@ def scroll_and_extract_tweets(driver, max_scrolls=25, max_tweets=100):
                     seen_texts.add(tweet_info["text"])
                     tweets_data.append(tweet_info)
                     content_preview = tweet_info["text"][:80] + "..." if len(tweet_info["text"]) > 80 else tweet_info["text"]
-                    print(f"📄 {tweet_info['author']} – {content_preview}")
+                    # Include likes count in the log
+                    print(f"📄 {tweet_info['author']} – {content_preview} [❤️ {tweet_info['likes']}]")
                     
                     if len(tweets_data) >= max_tweets:
                         print(f"✅ Reached max_tweets limit ({max_tweets})")
@@ -483,13 +549,13 @@ def remove_duplicates(all_tweets):
 
 def save_to_csv(data, filename):
     """Save tweets data to CSV file"""
-    # Use the original format with only these keys
-    keys = ["author", "handle", "date", "text"]
+    # Updated keys to include likes
+    keys = ["author", "handle", "date", "text", "likes"]
     
     # Filter out any additional fields we added
     filtered_data = []
     for tweet in data:
-        filtered_tweet = {k: tweet[k] for k in keys if k in tweet}
+        filtered_tweet = {k: tweet.get(k, "") for k in keys}
         filtered_data.append(filtered_tweet)
     
     with open(filename, "w", newline="", encoding="utf-8") as f:
@@ -624,4 +690,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-    

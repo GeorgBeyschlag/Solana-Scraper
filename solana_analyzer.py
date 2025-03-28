@@ -126,8 +126,8 @@ class SolanaSpecializedAnalyzer:
             self.current_model = None
             self.current_task = None
 
-    def analyze_relevance(self, tweet_text):
-        """Analyze tweet relevance to Solana using zero-shot classification"""
+    def analyze_relevance(self, tweet_text, likes=0):
+        """Analyze tweet relevance to Solana using zero-shot classification and likes count"""
         try:
             self.load_model("relevance")
             
@@ -149,10 +149,22 @@ class SolanaSpecializedAnalyzer:
                 if keyword_relevance > relevance_score:
                     relevance_score = min(10, int((relevance_score + keyword_relevance) / 2) + 1)
             
+            # Adjust relevance based on likes count
+            if likes > 0:
+                # Log-scale adjustment for likes to prevent extreme values from dominating
+                # ln(likes+1) gives a smoother curve and handles zero likes
+                likes_factor = min(3, np.log1p(likes) / 2)  # Cap the boost at +3
+                relevance_score = min(10, relevance_score + likes_factor)
+                
             return relevance_score
         except Exception as e:
             print(f"Error in relevance analysis: {e}")
-            return self.keyword_relevance(tweet_text)
+            # Fall back to keyword relevance with likes adjustment
+            keyword_relevance = self.keyword_relevance(tweet_text)
+            if likes > 0:
+                likes_factor = min(3, np.log1p(likes) / 2)
+                keyword_relevance = min(10, keyword_relevance + likes_factor)
+        return keyword_relevance
     
     def keyword_relevance(self, tweet_text):
         """Backup method for relevance using keyword matching"""
@@ -363,7 +375,7 @@ class SolanaSpecializedAnalyzer:
         
         return reliability_score
     
-    def analyze_tweet(self, tweet_text):
+    def analyze_tweet(self, tweet_text, likes=0):
         """Comprehensive tweet analysis using specialized models"""
         # Handle non-string inputs
         if not isinstance(tweet_text, str):
@@ -374,7 +386,8 @@ class SolanaSpecializedAnalyzer:
                     "reliability": 0,
                     "sentiment": "Neutral",
                     "category": "Other",
-                    "explanation": "Empty tweet"
+                    "explanation": "Empty tweet",
+                    "likes": likes
                 }
             try:
                 # Try to convert to string if possible
@@ -386,7 +399,8 @@ class SolanaSpecializedAnalyzer:
                     "reliability": 0,
                     "sentiment": "Neutral", 
                     "category": "Other",
-                    "explanation": "Non-text content"
+                    "explanation": "Non-text content",
+                    "likes": likes
                 }
                 
         if not tweet_text or tweet_text.strip() == "":
@@ -396,7 +410,8 @@ class SolanaSpecializedAnalyzer:
                 "reliability": 0,
                 "sentiment": "Neutral",
                 "category": "Other",
-                "explanation": "Empty tweet"
+                "explanation": "Empty tweet",
+                "likes": likes
             }
             
         result = {
@@ -405,11 +420,12 @@ class SolanaSpecializedAnalyzer:
             "reliability": None,
             "sentiment": None,
             "category": None,
-            "explanation": ""
+            "explanation": "",
+            "likes": likes
         }
         
         # 1. Analyze relevance (should we process this tweet further?)
-        result["relevance"] = self.analyze_relevance(tweet_text)
+        result["relevance"] = self.analyze_relevance(tweet_text, likes)
         
         # If very low relevance, skip detailed analysis
         if result["relevance"] <= 2:
@@ -456,13 +472,14 @@ class SolanaSpecializedAnalyzer:
     def process_dataframe(self, df, output_path="solana_tweets_analyzed.csv"):
         """Process all tweets in the dataframe using a task-based approach for speed"""
         # Create columns for analysis results if they don't exist
-        for col in ['relevance', 'risk', 'reliability', 'sentiment', 'category', 'explanation']:
+        for col in ['relevance', 'risk', 'reliability', 'sentiment', 'category', 'explanation', 'likes']:
             if col not in df.columns:
                 df[col] = None
         
         # Get valid tweets
         valid_indices = []
         valid_texts = []
+        valid_likes = []
         
         print("Filtering valid tweets...")
         for idx, row in tqdm(df.iterrows(), total=len(df)):
@@ -473,12 +490,19 @@ class SolanaSpecializedAnalyzer:
             # Get the tweet text
             tweet_text = row.get('text', '')
             
+            # Get the likes count (default to 0 if missing)
+            try:
+                likes = int(row.get('likes', 0))
+            except:
+                likes = 0
+            
             # Skip empty tweets
             if not isinstance(tweet_text, str) or not tweet_text.strip():
                 continue
                 
             valid_indices.append(idx)
             valid_texts.append(tweet_text)
+            valid_likes.append(likes)
         
         print(f"Processing {len(valid_indices)} tweets by task...")
         
@@ -493,15 +517,22 @@ class SolanaSpecializedAnalyzer:
         batch_size = min(10, self.batch_size * 3)  # Increase batch size for speed
         for i in tqdm(range(0, len(valid_texts), batch_size)):
             batch_texts = valid_texts[i:i+batch_size]
+            batch_likes = valid_likes[i:i+batch_size]
             batch_scores = []
             
-            for text in batch_texts:
+            for j, text in enumerate(batch_texts):
                 try:
-                    score = self.analyze_relevance(text)
+                    likes = batch_likes[j] if j < len(batch_likes) else 0
+                    score = self.analyze_relevance(text, likes)
                     batch_scores.append(score)
                 except Exception as e:
                     print(f"Error in relevance analysis: {e}")
-                    batch_scores.append(self.keyword_relevance(text))
+                    score = self.keyword_relevance(text)
+                    # Adjust for likes even in fallback
+                    if j < len(batch_likes) and batch_likes[j] > 0:
+                        likes_factor = min(3, np.log1p(batch_likes[j]) / 2)
+                        score = min(10, score + likes_factor)
+                    batch_scores.append(score)
             
             relevance_scores.extend(batch_scores)
             
@@ -662,6 +693,16 @@ class SolanaSpecializedAnalyzer:
                 df.at[idx, 'category'] = "Other"
                 df.at[idx, 'explanation'] = "Low relevance to Solana"
         
+        # Make sure likes are preserved in the output
+        print("Ensuring likes are properly preserved...")
+        for idx, row in df.iterrows():
+            # If likes exists in input but not in output, copy it over
+            if 'likes' in row and pd.isna(df.at[idx, 'likes']):
+                try:
+                    df.at[idx, 'likes'] = int(row['likes'])
+                except:
+                    df.at[idx, 'likes'] = 0
+        
         # Post-process for consistency
         print("Post-processing results...")
         df = self.post_process_results(df)
@@ -719,6 +760,11 @@ class SolanaSpecializedAnalyzer:
             avg = numeric_values.mean()
             print(f"Average {metric.capitalize()}: {avg:.2f}/10")
         
+        # Calculate average likes
+        numeric_likes = pd.to_numeric(df['likes'], errors='coerce')
+        avg_likes = numeric_likes.mean()
+        print(f"Average Likes: {avg_likes:.2f}")
+        
         # Sentiment distribution
         print("\n--- Sentiment Distribution ---")
         sentiment_counts = df['sentiment'].value_counts()
@@ -734,6 +780,16 @@ class SolanaSpecializedAnalyzer:
             if pd.notna(category):
                 percentage = (count / len(df)) * 100
                 print(f"{category}: {count} tweets ({percentage:.1f}%)")
+        
+        # High-engagement tweets
+        numeric_likes = pd.to_numeric(df['likes'], errors='coerce')
+        high_engagement = df.sort_values('likes', ascending=False).head(5).copy()
+        print(f"\n--- Most Popular Tweets (by Likes) ---")
+        for _, row in high_engagement.iterrows():
+            handle = row.get('handle', 'Unknown')
+            text = row.get('text', '')[:70] + "..." if len(row.get('text', '')) > 70 else row.get('text', '')
+            likes = row.get('likes', 'N/A')
+            print(f"- {handle}: {likes} likes - {text}")
         
         # High-risk tweets
         numeric_risk = pd.to_numeric(df['risk'], errors='coerce')
