@@ -206,7 +206,7 @@ Generates a 7-day sentiment momentum chart.
 - **Non-headless Chrome** was used because X's interface appeared to detect and throttle headless browsers more aggressively during testing.
 - **Task-specific NLP models** were chosen over lightweight general-purpose LLMs because the latter performed poorly on tweet-level relevance and risk classification.
 
-- **Storing credentials in the README/script** is generally not recommended. However, due to time constraints and the fact that this is a private repository using a disposable test account, this was deemed acceptable for the scope of this project.
+- **Storing credentials in the README/script** is generally not recommended. However, due to time constraints and the fact that this is a test account with no personal data , this was deemed acceptable for the scope of this project. The Account will be deleted after your review. 
 
 This project enables automated monitoring of Solana-related discussions on X by combining real-time scraping, NLP analysis, and temporal sentiment tracking in one streamlined pipeline.
 
